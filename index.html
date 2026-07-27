@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyAbsensi - Manajemen Kelas Digital</title>
+    
+    <script>
+        // Global error handler to catch any JS errors causing a blank screen
+        window.addEventListener('error', function(e) {
+            document.body.innerHTML = '<div style="padding: 20px; color: red; font-family: sans-serif;"><h3>Aplikasi Mengalami Kesalahan (Error)</h3><p><strong>Pesan:</strong> ' + e.message + '</p><p><strong>Lokasi:</strong> Baris ' + e.lineno + ' Kolom ' + e.colno + '</p><p>Harap tangkap layar (screenshot) pesan ini dan berikan ke pengembang.</p></div>';
+        });
+    </script>
+    
+    <!-- PWA Meta Tags & Manifest -->
+    <meta name="theme-color" content="#007BFF">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="My Absen">
+    <link rel="apple-touch-icon" href="https://ui-avatars.com/api/?name=AG&background=007BFF&color=fff&size=192">
+    <link rel="manifest" id="manifest-link">
+
+    <script>
+        // PWA Setup: Inject Manifest secara dinamis untuk Google Apps Script
+        const manifest = {
+            "name": "MyAbsensi - Manajemen Kelas",
+            "short_name": "MyAbsensi",
+            "start_url": "?pwa=1",
+            "display": "standalone",
+            "background_color": "#f4f7f6",
+            "theme_color": "#007BFF",
+            "icons": [
+                {
+                    "src": "https://ui-avatars.com/api/?name=AG&background=007BFF&color=fff&size=192",
+                    "sizes": "192x192",
+                    "type": "image/png"
+                },
+                {
+                    "src": "https://ui-avatars.com/api/?name=AG&background=007BFF&color=fff&size=512",
+                    "sizes": "512x512",
+                    "type": "image/png"
+                }
+            ]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+        document.getElementById('manifest-link').href = URL.createObjectURL(manifestBlob);
+
+        // Service Worker Setup untuk Caching Asset (Bootstrap, Icons, Chart.js)
+        if ('serviceWorker' in navigator) {
+            const swCode = `
+                const CACHE_NAME = 'MyAbsensi-cache-v1';
+                self.addEventListener('install', event => {
+                    self.skipWaiting();
+                });
+                self.addEventListener('activate', event => {
+                    event.waitUntil(clients.claim());
+                });
+                self.addEventListener('fetch', event => {
+                    // Hanya cache library eksternal agar loading lebih cepat
+                    if (event.request.url.startsWith('https://cdn') || event.request.url.startsWith('https://cdnjs')) {
+                        event.respondWith(
+                            caches.match(event.request).then(response => {
+                                return response || fetch(event.request).then(fetchRes => {
+                                    return caches.open(CACHE_NAME).then(cache => {
+                                        cache.put(event.request, fetchRes.clone());
+                                        return fetchRes;
+                                    });
+                                });
+                            })
+                        );
+                    }
+                });
+            `;
+            const swBlob = new Blob([swCode], {type: 'application/javascript'});
+            const swUrl = URL.createObjectURL(swBlob);
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register(swUrl).then(reg => {
+                    console.log('PWA Service Worker berhasil didaftarkan.');
+                }).catch(err => {
+                    // Iframe Google Apps Script kadang memblokir Service Worker demi keamanan.
+                    // Namun fitur "Add to Home Screen" dari Manifest tetap akan berfungsi.
+                    console.log('Mode PWA aktif (Add to Home screen manual). SW Status:', err);
+                });
+            });
+        }
+    </script>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- xlsx (Excel) dan jsPDF sengaja TIDAK dimuat di sini lagi -- dimuat belakangan (lazy)
+         lewat loadScriptOnce() di JavaScript.html, hanya saat fitur Export Excel/PDF dipakai.
+         Ini untuk menghindari salah satu library tersebut memicu pelanggaran CSP (blokir eval)
+         yang membuat seluruh script aplikasi gagal berjalan di sandbox Google Apps Script. -->
+    <!-- Tambahkan LocalForage untuk Database Internal Browser (Permanen & Besar) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+
+    <style>
+        :root {
+            --primary-blue: #007BFF;
+            --primary-orange: #FF7F00;
+            --light-blue: #e6f2ff;
+            --bg-color: #f4f7f6;
+            --sidebar-width: 260px;
+            --font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            overflow-x: hidden;
+            overflow-y: auto !important; /* Memaksa agar scroll vertikal selalu aktif */
+            min-height: 100vh;
+        }
+
+        /* Loading Overlay */
+        #loading-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.98); z-index: 9999;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        .spinner-custom { color: var(--primary-orange); width: 3.5rem; height: 3.5rem; border-width: 0.35em;}
+
+        .btn-orange { background-color: var(--primary-orange); color: white; border: none; font-weight: 600; padding: 10px 20px;}
+        .btn-orange:hover { background-color: #e67300; color: white; }
+        .btn-blue { background-color: var(--primary-blue); color: white; border: none; font-weight: 600; padding: 10px 20px;}
+        .btn-blue:hover { background-color: #0069d9; color: white;}
+        .text-orange { color: var(--primary-orange) !important; }
+
+        /* Views */
+        #login-view { display: none; }
+        #app-view { display: none; }
+        
+        /* Animations */
+        @keyframes float { 0% { transform: translateY(0px); } 50% { transform: translateY(-20px); } 100% { transform: translateY(0px); } }
+        .anim-float { animation: float 4s ease-in-out infinite; }
+        
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        .anim-fade-up { animation: fadeInUp 0.8s ease-out forwards; opacity: 0; }
+        .delay-1 { animation-delay: 0.2s; }
+        .delay-2 { animation-delay: 0.4s; }
+
+        /* Sidebar & Layout Responsif */
+        .sidebar {
+            width: var(--sidebar-width); height: 100vh; position: fixed; top: 0; left: 0;
+            background: linear-gradient(180deg, var(--primary-blue), #0056b3); box-shadow: 2px 0 10px rgba(0,0,0,0.1); padding-top: 20px; z-index: 1040;
+            overflow-y: auto; padding-bottom: 30px; transition: transform 0.3s ease-in-out;
+        }
+        .sidebar .brand { padding: 0 20px 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;}
+        .sidebar .brand h3 { color: var(--primary-orange); font-weight: 800; margin:0; font-size: 1.8rem;}
+        .sidebar .brand p { color: rgba(255,255,255,0.9); font-weight: 600; font-size: 0.85rem; margin:0; }
+        
+        .nav-item { padding: 5px 15px; }
+        .nav-link { color: rgba(255,255,255,0.8); border-radius: 8px; font-weight: 500; display: flex; align-items: center; gap: 10px; padding: 12px 15px; transition: 0.3s; cursor: pointer; }
+        .nav-link:hover { background-color: rgba(255, 127, 0, 0.15); color: #ffd2a6; font-weight: 600; }
+        .nav-link.active { background-color: var(--primary-orange); color: white; font-weight: 600; box-shadow: 0 4px 10px rgba(255, 127, 0, 0.4); }
+        .nav-link.active i { color: white; }
+        .nav-link.text-danger { color: #ff9999 !important; }
+        .nav-link.text-danger:hover { background-color: rgba(220, 53, 69, 0.2); color: #ffcccc !important; }
+
+        .main-content { min-height: 100vh; transition: margin-left 0.3s ease-in-out; max-width: 100%; overflow-x: hidden; }
+        
+        /* Sidebar Overlay untuk Mobile */
+        .sidebar-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.5); z-index: 1030; opacity: 0; transition: opacity 0.3s ease-in-out;
+        }
+
+        /* Media Queries untuk Responsivitas */
+        @media (min-width: 992px) {
+            .sidebar { transform: translateX(0); }
+            .main-content { margin-left: var(--sidebar-width); padding: 30px; }
+            .mobile-toggle { display: none !important; }
+        }
+        @media (max-width: 991.98px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.show { transform: translateX(0); }
+            .sidebar-overlay.show { display: block; opacity: 1; }
+            .main-content { margin-left: 0; padding: 15px; }
+            .mobile-toggle { display: block; }
+        }
+        
+        .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.02);}
+        .user-profile { display: flex; align-items: center; gap: 15px; cursor: pointer;}
+        .user-profile img { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; border: 2px solid var(--primary-orange);}
+
+        .card-custom { background: white; border-radius: 15px; border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.03); margin-bottom: 20px;}
+        .card-header-custom { background: white; border-bottom: 1px solid #eee; padding: 15px 20px; border-radius: 15px 15px 0 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center;}
+        .card-title-custom { font-weight: 700; color: #333; margin:0; font-size: 1.1rem;}
+        
+        .table-responsive-custom { max-height: 60vh; overflow: auto; border-radius: 8px; border: 1px solid #dee2e6; -webkit-overflow-scrolling: touch; }
+        
+        /* Tabel Dinamis Pengganti Tabel-30 Kolom */
+        .table-dynamic { width: max-content; min-width: 100%; }
+        .table-dynamic th, .table-dynamic td { text-align: center; vertical-align: middle; padding: 5px; min-width: 120px; }
+        .table-dynamic th:first-child, .table-dynamic td:first-child { position: sticky; left: 0; background: white; z-index: 2; width: 200px; min-width: 200px; text-align: left; box-shadow: 2px 0 5px rgba(0,0,0,0.05);}
+        
+        .date-input-header { width: 125px; font-size: 0.8rem; padding: 2px; text-align: center; border: 1px solid #ccc; border-radius: 4px; display:block; margin: 0 auto;}
+        .status-select { width: 60px; font-size: 0.85rem; font-weight: bold; padding: 2px; border-radius: 4px; text-align:center; margin: 0 auto; display:block;}
+        .status-H { color: #198754; background: #d1e7dd; }
+        .status-S { color: #0dcaf0; background: #cff4fc; }
+        .status-I { color: #ffc107; background: #fff3cd; }
+        .status-A { color: #dc3545; background: #f8d7da; }
+
+        .stat-card { padding: 20px; border-radius: 15px; color: white; display:flex; align-items:center; gap: 15px;}
+        .stat-icon { background: rgba(255,255,255,0.2); width: 60px; height: 60px; border-radius: 50%; display:flex; justify-content:center; align-items:center; font-size: 1.8rem; flex-shrink: 0;}
+        .bg-gradient-blue { background: linear-gradient(45deg, var(--primary-blue), #4db8ff); }
+        .bg-gradient-orange { background: linear-gradient(45deg, var(--primary-orange), #ffae66); }
+        .bg-gradient-green { background: linear-gradient(45deg, #198754, #48c78e); }
+
+        .view-section { display: none; animation: fadeIn 0.4s ease-in-out; }
+        .view-section.active { display: block; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: translateY(0);} }
+        .anim-popup { animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        @keyframes popIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--primary-blue); }
+    </style>
+</head>
+<body>
+
+    <div id="loading-overlay">
+        <div class="spinner-border spinner-custom mb-3" role="status"></div>
+        <h4 style="color: var(--primary-blue); font-weight: bold; margin-top: 10px;" id="loading-text">Memuat Sistem...</h4>
+    </div>
+
+    <div id="login-view" class="container-fluid p-0 vh-100">
+        <div class="row g-0 h-100">
+            <div class="col-lg-5 col-12 bg-white shadow-lg z-3 d-flex flex-column overflow-y-auto" style="height: 100vh;">
+                <div class="w-100 px-4 py-5 my-auto mx-auto" style="max-width: 450px;">
+                    <div class="text-center mb-4 d-lg-none">
+                        <h2 class="fw-bold" style="color: var(--primary-orange);">MyAbsensi</h2>
+                    </div>
+
+                    <div id="form-login">
+                        <h2 class="fw-bold mb-2">Masuk</h2>
+                        <p class="text-muted mb-4">Selamat datang kembali, Guru Hebat!</p>
+                        <form onsubmit="handleAuth(event, 'login')">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold small text-secondary">Email Terdaftar</label>
+                                <input type="email" class="form-control form-control-lg bg-light border-0" id="loginUser" required placeholder="Masukkan Email Anda">
+                            </div>
+                            <div class="mb-4">
+                                <label class="form-label fw-bold small text-secondary">Password</label>
+                                <input type="password" class="form-control form-control-lg bg-light border-0" id="loginPass" required placeholder="Masukkan Password">
+                            </div>
+                            <button type="submit" class="btn btn-orange w-100 btn-lg mb-3 shadow-sm rounded-3">Masuk Sekarang</button>
+                            <p class="text-center text-muted small">Belum punya akun? <a href="javascript:void(0)" class="text-primary fw-bold text-decoration-none" onclick="toggleAuthMode('register')">Daftar di sini</a></p>
+                        </form>
+                    </div>
+
+                    <div id="form-register" style="display:none;">
+                        <h2 class="fw-bold mb-2">Daftar Baru</h2>
+                        <p class="text-muted mb-4">Bergabunglah dan kelola kelas Anda dengan cerdas.</p>
+                        <form onsubmit="handleAuth(event, 'register')">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold small text-secondary">Nama Lengkap & Gelar</label>
+                                <input type="text" class="form-control form-control-lg bg-light border-0" id="regName" required placeholder="Cth: Achmad Fitriansyah, S.Pd.">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-bold small text-secondary">Email Aktif</label>
+                                <input type="email" class="form-control form-control-lg bg-light border-0" id="regEmail" required placeholder="Cth: guru@sekolah.id">
+                            </div>
+                            <div class="mb-4">
+                                <label class="form-label fw-bold small text-secondary">Buat Password</label>
+                                <input type="password" class="form-control form-control-lg bg-light border-0" id="regPass" required minlength="4" placeholder="Minimal 4 karakter">
+                            </div>
+                            <button type="submit" class="btn btn-blue w-100 btn-lg mb-3 shadow-sm rounded-3">Buat Akun Sekarang</button>
+                            <p class="text-center text-muted small">Sudah punya akun? <a href="javascript:void(0)" class="text-orange fw-bold text-decoration-none" onclick="toggleAuthMode('login')">Masuk di sini</a></p>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Watermark Login -->
+                <div class="w-100 text-center pb-3 mt-auto">
+                    <small class="text-muted" style="font-size: 0.75rem;">
+                        Dikembangkan oleh <b style="color: var(--primary-orange);">Achmad Fitriasnyah,S.Pd.</b><br>
+                        <i class="bi bi-tiktok"></i> None &nbsp;|&nbsp; <i class="bi bi-instagram"></i> None
+                    </small>
+                </div>
+            </div>
+
+            <div class="col-lg-7 d-none d-lg-flex flex-column justify-content-center align-items-center position-relative overflow-hidden" style="background: linear-gradient(135deg, var(--primary-blue), #00c3ff);">
+                <div class="position-absolute rounded-circle" style="width: 400px; height: 400px; background: rgba(255,255,255,0.05); top: -100px; right: -100px;"></div>
+                <div class="position-absolute rounded-circle" style="width: 250px; height: 250px; background: rgba(255,255,255,0.05); bottom: -50px; left: 5%;"></div>
+                
+                <div class="text-center text-white z-2" style="max-width: 80%;">
+                    <i class="bi bi-laptop anim-float d-block mb-4" style="font-size: 7rem; text-shadow: 0 15px 30px rgba(0,0,0,0.3);"></i>
+                    <h1 class="fw-bold display-4 mb-3 anim-fade-up" style="text-shadow: 0 4px 10px rgba(0,0,0,0.1);">MyAbsensi</h1>
+                    <p class="fs-5 fw-light mb-5 anim-fade-up delay-1 opacity-75">Platform Manajemen Kelas Digital Terpadu untuk mendukung Kurikulum Merdeka.</p>
+                    
+                    <div class="row text-start anim-fade-up delay-2">
+                        <div class="col-md-6 mb-3">
+                            <div class="d-flex align-items-center p-3 rounded-4 shadow-sm" style="background: rgba(255,255,255,0.15); backdrop-filter: blur(5px);">
+                                <i class="bi bi-calendar2-check text-warning fs-3 me-3"></i>
+                                <div><h6 class="fw-bold mb-0">Absensi Cepat</h6><small class="opacity-75">Rekap kehadiran otomatis</small></div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="d-flex align-items-center p-3 rounded-4 shadow-sm" style="background: rgba(255,255,255,0.15); backdrop-filter: blur(5px);">
+                                <i class="bi bi-graph-up-arrow text-warning fs-3 me-3"></i>
+                                <div><h6 class="fw-bold mb-0">Data Nilai</h6><small class="opacity-75">Analisis capaian siswa</small></div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="d-flex align-items-center p-3 rounded-4 shadow-sm" style="background: rgba(255,255,255,0.15); backdrop-filter: blur(5px);">
+                                <i class="bi bi-journal-text text-warning fs-3 me-3"></i>
+                                <div><h6 class="fw-bold mb-0">Jurnal Kelas</h6><small class="opacity-75">Catatan kegiatan harian</small></div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="d-flex align-items-center p-3 rounded-4 shadow-sm" style="background: rgba(255,255,255,0.15); backdrop-filter: blur(5px);">
+                                <i class="bi bi-file-earmark-pdf text-warning fs-3 me-3"></i>
+                                <div><h6 class="fw-bold mb-0">Ekspor Laporan</h6><small class="opacity-75">Unduh ke PDF & Excel</small></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-view">
+        <div id="sidebar-overlay" class="sidebar-overlay" onclick="toggleSidebar()"></div>
+        
+        <div class="sidebar" id="sidebar-menu">
+            <div class="brand d-flex justify-content-between align-items-center">
+                <div>
+                    <h3>MyAbsensi</h3>
+                    <p>Manajemen Kelas</p>
+                </div>
+                <button class="btn btn-sm text-white d-lg-none" onclick="toggleSidebar()"><i class="bi bi-x-lg fs-4"></i></button>
+            </div>
+            <ul class="nav flex-column mt-3">
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link active" onclick="switchView('beranda')"><i class="bi bi-house-door"></i> Beranda</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('kelas')"><i class="bi bi-people"></i> Manajemen Kelas</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('absensi')"><i class="bi bi-calendar-check"></i> Absensi Siswa</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('nilai')"><i class="bi bi-award"></i> Data Nilai</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('kokurikuler')"><i class="bi bi-stars"></i> Nilai Kokurikuler</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('jurnal')"><i class="bi bi-journal-text"></i> Jurnal Harian</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('jadwal')"><i class="bi bi-clock"></i> Jadwal Pelajaran</a></li>
+                <li class="nav-item"><a href="javascript:void(0)" class="nav-link" onclick="switchView('poin')"><i class="bi bi-patch-check"></i> Poin Siswa</a></li>
+                <li class="nav-item mt-5"><a href="javascript:void(0)" class="nav-link text-danger" onclick="logout()"><i class="bi bi-box-arrow-left"></i> Keluar Akun</a></li>
+            </ul>
+
+            <!-- Watermark Sidebar -->
+            <div class="text-center mt-5 pt-3 mb-2 px-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                <small style="color: rgba(255,255,255,0.7); font-size: 0.7rem; line-height: 1.6;">
+                    Dikembangkan oleh<br>
+                    <span style="color: var(--primary-orange); font-weight: bold; font-size: 0.8rem;">Achmad Fitriansyah,S.Pd.</span><br>
+                    <i class="bi bi-tiktok mt-1"></i> None &nbsp;|&nbsp; <i class="bi bi-instagram"></i> None
+                </small>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="topbar">
+                <div class="d-flex align-items-center">
+                    <button class="btn btn-outline-primary me-3 mobile-toggle border-0" onclick="toggleSidebar()"><i class="bi bi-list fs-4"></i></button>
+                    <div>
+                        <h4 class="fw-bold m-0" id="topbar-title">Beranda</h4>
+                        <small class="text-muted d-none d-sm-block" id="topbar-date"></small>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-3">
+                <span id="sync-indicator" style="display:none; font-size:0.8rem; font-weight:600; align-items:center; gap:6px;"></span>
+                <div class="user-profile" onclick="openProfileModal()">
+                    <div class="text-end d-none d-md-block">
+                        <h6 class="m-0 fw-bold" id="profile-name">-</h6>
+                        <small class="text-muted" id="profile-school">Guru Kelas</small>
+                    </div>
+                    <img src="https://ui-avatars.com/api/?name=Guru&background=FF7F00&color=fff" alt="Profile" id="profile-img">
+                </div>
+                </div>
+            </div>
+
+            <div id="view-beranda" class="view-section active">
+                <div class="row mb-4">
+                    <div class="col-12">
+                        <div class="card-custom bg-gradient-blue text-white p-4 d-flex justify-content-between align-items-center">
+                            <div>
+                                <h2 class="fw-bold fs-3">Selamat Datang!</h2>
+                                <p class="mb-0 opacity-75 small">Kelola absensi, nilai, jurnal, dan laporan kelas dengan mudah & cepat.</p>
+                            </div>
+                            <i class="bi bi-laptop d-none d-md-block" style="font-size: 4rem; opacity: 0.5;"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mb-4">
+                    <div class="col-md-4 col-sm-6 mb-3">
+                        <div class="stat-card bg-gradient-blue">
+                            <div class="stat-icon"><i class="bi bi-people-fill"></i></div>
+                            <div><h3 class="mb-0 fw-bold" id="stat-siswa">0</h3><p class="mb-0 small">Siswa</p></div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 col-sm-6 mb-3">
+                        <div class="stat-card bg-gradient-orange">
+                            <div class="stat-icon"><i class="bi bi-check-circle-fill"></i></div>
+                            <div><h3 class="mb-0 fw-bold" id="stat-hadir">0%</h3><p class="mb-0 small">Hadir</p></div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 col-12 mb-3">
+                        <div class="stat-card bg-gradient-green">
+                            <div class="stat-icon"><i class="bi bi-journal-bookmark-fill"></i></div>
+                            <div><h3 class="mb-0 fw-bold" id="stat-kelas">0</h3><p class="mb-0 small">Kelas</p></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <div class="card-custom h-100">
+                            <div class="card-header-custom"><h5 class="card-title-custom"><i class="bi bi-clock me-2 text-warning"></i> Jadwal Hari Ini</h5></div>
+                            <div class="card-body">
+                                <ul class="list-group list-group-flush" id="dashboard-jadwal"></ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <div class="card-custom h-100">
+                            <div class="card-header-custom"><h5 class="card-title-custom"><i class="bi bi-graph-up me-2 text-primary"></i> Grafik Kehadiran</h5></div>
+                            <div class="card-body">
+                                <canvas id="chartKehadiran" height="200"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-kelas" class="view-section">
+                <div class="card-custom">
+                    <div class="card-header-custom">
+                        <h5 class="card-title-custom mb-2 mb-md-0">Data Kelas & Siswa</h5>
+                        <div>
+                            <button class="btn btn-sm btn-outline-primary mb-1" onclick="showAddClassModal()"><i class="bi bi-plus"></i> Kelas</button>
+                            <button class="btn btn-sm btn-success mb-1" onclick="showAddStudentModal()"><i class="bi bi-person-plus"></i> Siswa</button>
+                            <button class="btn btn-sm btn-success mb-1" onclick="openBroadcastModal()"><i class="bi bi-whatsapp"></i> Broadcast WA</button>
+                            <button class="btn btn-sm btn-orange mb-1" onclick="showUploadExcelModal()"><i class="bi bi-upload"></i> Excel</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-5 col-12 d-flex align-items-end gap-2">
+                                <div class="flex-grow-1">
+                                    <label class="form-label">Pilih Kelas</label>
+                                    <select class="form-select" id="select-kelas-manajemen" onchange="renderStudentsTable()">
+                                        <option value="">-- Pilih --</option>
+                                    </select>
+                                </div>
+                                <button class="btn btn-outline-danger mb-1" id="btn-hapus-kelas" onclick="deleteClass()" style="display: none;" title="Hapus Kelas Ini"><i class="bi bi-trash"></i> Hapus Kelas</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th width="5%" class="text-center align-middle"><input type="checkbox" id="chk-all-stds" class="form-check-input" onchange="toggleAllStudents(this)"></th>
+                                        <th width="5%" class="text-center">No</th>
+                                        <th>Nama Siswa</th>
+                                        <th width="15%" class="text-center">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-students-body">
+                                    <tr><td colspan="4" class="text-center text-muted">Pilih kelas terlebih dahulu</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-absensi" class="view-section">
+                <div class="card-custom mb-3">
+                    <div class="card-body row align-items-end">
+                        <div class="col-md-3 col-6 mb-2">
+                            <label class="form-label mb-1">Kelas</label>
+                            <select class="form-select" id="absen-kelas" onchange="loadAbsensiData()"></select>
+                        </div>
+                        <div class="col-md-3 col-6 mb-2">
+                            <label class="form-label mb-1">Bulan</label>
+                            <select class="form-select" id="absen-bulan" onchange="loadAbsensiData()">
+                                <option value="07">Juli (Ganjil)</option>
+                                <option value="08">Agustus (Ganjil)</option>
+                                <option value="09">September (Ganjil)</option>
+                                <option value="10">Oktober (Ganjil)</option>
+                                <option value="11">November (Ganjil)</option>
+                                <option value="12">Desember (Ganjil)</option>
+                                <option value="01">Januari (Genap)</option>
+                                <option value="02">Februari (Genap)</option>
+                                <option value="03">Maret (Genap)</option>
+                                <option value="04">April (Genap)</option>
+                                <option value="05">Mei (Genap)</option>
+                                <option value="06">Juni (Genap)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 col-12 text-md-end text-start mt-2">
+                            <button class="btn btn-info mb-1 text-white fw-bold me-1" onclick="addAbsenColumn()"><i class="bi bi-plus-circle"></i> Tambah Kolom</button>
+                            <div class="dropdown d-inline-block me-1 mb-1">
+                                <button class="btn btn-success dropdown-toggle" type="button" data-bs-toggle="dropdown"><i class="bi bi-file-excel"></i> Excel</button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadAbsenExcel('ganjil')">Semester Ganjil</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadAbsenExcel('genap')">Semester Genap</a></li>
+                                </ul>
+                            </div>
+                            <button class="btn btn-primary mb-1" onclick="saveAbsensi()"><i class="bi bi-save"></i> Simpan Data</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-custom">
+                    <div class="card-header-custom"><h5 class="card-title-custom">Tabel Absensi</h5></div>
+                    <div class="card-body">
+                        <div class="alert alert-info py-2 small"><i class="bi bi-info-circle"></i> H (Hadir), S (Sakit), I (Izin), A (Alpha). Tambahkan kolom jika butuh hari baru.</div>
+                        <div class="table-responsive table-responsive-custom">
+                            <table class="table table-bordered table-dynamic" id="table-absen">
+                                <thead><tr class="table-primary" id="absen-thead"></tr></thead>
+                                <tbody id="absen-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-custom mt-4" id="absensi-chart-container" style="display:none;">
+                    <div class="card-header-custom"><h5 class="card-title-custom"><i class="bi bi-bar-chart-fill me-2 text-primary"></i> Grafik Kehadiran Bulan Ini</h5></div>
+                    <div class="card-body"><canvas id="chartAbsensi" height="250"></canvas></div>
+                </div>
+            </div>
+
+            <div id="view-nilai" class="view-section">
+                <div class="card-custom mb-3">
+                    <div class="card-body row align-items-end">
+                        <div class="col-md-3 col-6 mb-2">
+                            <label class="form-label mb-1">Kelas</label>
+                            <select class="form-select" id="nilai-kelas" onchange="loadNilaiData()"></select>
+                        </div>
+                        <div class="col-md-3 col-6 mb-2">
+                            <label class="form-label mb-1">Mapel</label>
+                            <div class="input-group">
+                                <select class="form-select" id="nilai-mapel" onchange="loadNilaiData()">
+                                    <option value="">-- Pilih Mapel --</option>
+                                </select>
+                                <button class="btn btn-outline-primary" type="button" onclick="showAddMapelModal()" title="Tambah Mapel Baru"><i class="bi bi-plus"></i></button>
+                                <button class="btn btn-outline-secondary" type="button" onclick="showManageMapelModal()" title="Edit/Hapus Mata Pelajaran"><i class="bi bi-gear"></i></button>
+                            </div>
+                        </div>
+                        <div class="col-md-3 col-6 mb-2">
+                            <label class="form-label mb-1">Penilaian</label>
+                            <select class="form-select" id="nilai-jenis" onchange="loadNilaiData()">
+                                <option value="Formatif">Formatif (Harian)</option>
+                                <option value="SumatifLM">Sumatif Lingkup Materi</option>
+                                <option value="SumatifAS">Sumatif Akhir Semester</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3 col-6 mb-2">
+                            <label class="form-label mb-1">Bulan</label>
+                            <select class="form-select" id="nilai-bulan" onchange="loadNilaiData()">
+                                <option value="07">Juli</option><option value="08">Agustus</option><option value="09">September</option>
+                                <option value="10">Oktober</option><option value="11">November</option><option value="12">Desember</option>
+                                <option value="01">Januari</option><option value="02">Februari</option><option value="03">Maret</option>
+                                <option value="04">April</option><option value="05">Mei</option><option value="06">Juni</option>
+                            </select>
+                        </div>
+                        <div class="col-12 mt-2 text-md-end text-center">
+                            <button class="btn btn-info px-3 mb-2 text-white fw-bold me-1" id="btn-add-nilai-col" onclick="addNilaiColumn()" style="display:none;"><i class="bi bi-plus-circle"></i> Tambah Kolom</button>
+                            <button class="btn btn-primary px-4 mb-2" onclick="saveNilai()"><i class="bi bi-save me-1"></i> Simpan</button>
+                            <div class="dropdown d-inline-block mx-1 mb-2">
+                                <button class="btn btn-success dropdown-toggle" type="button" data-bs-toggle="dropdown"><i class="bi bi-file-excel"></i> Excel</button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadNilaiExcel('ganjil')">Semester Ganjil</a></li>
+                                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadNilaiExcel('genap')">Semester Genap</a></li>
+                                </ul>
+                            </div>
+                            <button class="btn btn-danger mb-2" onclick="downloadNilaiPDF()"><i class="bi bi-file-pdf"></i> PDF</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card-custom">
+                            <div class="card-header-custom"><h5 class="card-title-custom" id="nilai-table-title">Input Nilai Siswa</h5></div>
+                            <div class="card-body">
+                                <div class="table-responsive table-responsive-custom" id="container-table-nilai">
+                                    <div class="alert alert-secondary text-center">Silakan pilih Kelas dan Mata Pelajaran.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mt-2" id="nilai-stats-container" style="display:none;">
+                    <div class="col-md-6 mb-3">
+                        <div class="card bg-success text-white border-0 shadow-sm anim-popup h-100">
+                            <div class="card-body d-flex align-items-center p-3 p-md-4">
+                                <i class="bi bi-trophy-fill me-3 opacity-75" style="font-size: 2.5rem;"></i>
+                                <div>
+                                    <h6 class="mb-1 opacity-75 text-uppercase fw-bold small">Rata-rata Tertinggi</h6>
+                                    <h4 class="fw-bold mb-0" id="stat-nilai-max-name">-</h4>
+                                    <span class="badge bg-light text-success mt-2" id="stat-nilai-max-val">Nilai: 0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="card bg-danger text-white border-0 shadow-sm anim-popup h-100">
+                            <div class="card-body d-flex align-items-center p-3 p-md-4">
+                                <i class="bi bi-exclamation-triangle-fill me-3 opacity-75" style="font-size: 2.5rem;"></i>
+                                <div>
+                                    <h6 class="mb-1 opacity-75 text-uppercase fw-bold d-flex align-items-center small">
+                                        Di Bawah KKM (<input type="number" id="input-kkm" class="form-control form-control-sm mx-2 text-center text-dark fw-bold border-0 shadow-none" style="width: 45px; height: 20px; padding: 0;" value="75" oninput="calculateStatsNilai(true)">)
+                                    </h6>
+                                    <h4 class="fw-bold mb-0" id="stat-nilai-kkm-count">0 Siswa</h4>
+                                    <small class="mt-2 d-block opacity-75" id="stat-nilai-kkm-names">-</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mt-2" id="nilai-chart-container" style="display:none;">
+                    <div class="col-12">
+                        <div class="card-custom h-100">
+                            <div class="card-header-custom"><h5 class="card-title-custom"><i class="bi bi-bar-chart-line me-2 text-primary"></i> Grafik Nilai</h5></div>
+                            <div class="card-body"><canvas id="chartNilai" height="250"></canvas></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-kokurikuler" class="view-section">
+                <div class="card-custom mb-4">
+                    <div class="card-header-custom"><h5 class="card-title-custom">Input Penilaian Kokurikuler</h5></div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3 col-6 mb-3">
+                                <label class="form-label mb-1">Kelas</label>
+                                <select class="form-select" id="koku-kelas" onchange="loadKokuHistory()"></select>
+                            </div>
+                            <div class="col-md-3 col-6 mb-3">
+                                <label class="form-label mb-1">Tanggal</label>
+                                <input type="date" class="form-control" id="koku-tanggal">
+                            </div>
+                            <div class="col-md-6 col-12 mb-3">
+                                <label class="form-label mb-1">Jenis Penilaian</label>
+                                <select class="form-select" id="koku-jenis">
+                                    <option value="LintasMapel">Lintas Mata Pelajaran</option>
+                                    <option value="7KAIH">7KAIH</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-5 mb-3">
+                                <label class="form-label mb-1">Nama Projek</label>
+                                <input type="text" class="form-control" id="koku-projek" placeholder="Cth: Daur Ulang">
+                            </div>
+                            <div class="col-md-7 mb-3">
+                                <label class="form-label mb-1">Deskripsi Projek</label>
+                                <textarea class="form-control" id="koku-deskripsi" rows="2"></textarea>
+                            </div>
+                        </div>
+                        <hr>
+                        <h6 class="fw-bold mb-2">Pilih Dimensi Profil</h6>
+                        <div id="koku-dimensi-container" class="row g-2 mb-4"></div>
+                        <button class="btn btn-primary w-100 py-2 fw-bold" onclick="generateKokuTable()">Buat Format Tabel</button>
+                    </div>
+                </div>
+
+                <div class="card-custom mb-4" id="koku-history-section" style="display:none;">
+                    <div class="card-header-custom"><h5 class="card-title-custom">Riwayat Penilaian Kokurikuler Kelas Ini</h5></div>
+                    <div class="card-body">
+                        <div class="row align-items-end mb-3">
+                            <div class="col-md-6 col-12 mb-2">
+                                <label class="form-label mb-1 small fw-bold">Filter Projek untuk Diunduh</label>
+                                <select class="form-select form-select-sm" id="koku-export-filter">
+                                    <option value="">Semua Projek (Kelas Ini)</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 col-12 mb-2 text-md-end text-center">
+                                <button class="btn btn-sm btn-danger me-1" onclick="downloadKokuPDF()"><i class="bi bi-file-pdf"></i> Unduh PDF</button>
+                                <button class="btn btn-sm btn-primary" onclick="downloadKokuWord()"><i class="bi bi-file-earmark-word"></i> Unduh Word</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover text-sm" style="min-width: 500px;">
+                                <thead class="table-light">
+                                    <tr><th width="15%">Tanggal</th><th width="20%">Jenis</th><th width="30%">Nama Projek</th><th width="15%">Siswa Dinilai</th><th width="20%">Aksi</th></tr>
+                                </thead>
+                                <tbody id="koku-history-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-custom" id="koku-result-section" style="display:none;">
+                    <div class="card-header-custom">
+                        <h5 class="card-title-custom mb-2 mb-md-0">Daftar Nilai Kokurikuler</h5>
+                        <div>
+                            <button class="btn btn-sm btn-success me-1" onclick="saveAllKoku()"><i class="bi bi-save"></i> Simpan Data</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover text-sm" style="min-width: 600px;">
+                                <thead class="table-light">
+                                    <tr><th width="5%">No</th><th width="20%">Nama Siswa</th><th width="20%">Kategori Nilai</th><th width="55%">Deskripsi Otomatis</th></tr>
+                                </thead>
+                                <tbody id="koku-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-jurnal" class="view-section">
+                 <div class="card-custom mb-4">
+                    <div class="card-header-custom"><h5 class="card-title-custom">Input Jurnal Harian</h5></div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-3 col-6 mb-2">
+                                <label class="form-label mb-1">Tanggal</label>
+                                <input type="date" class="form-control" id="jurnal-date">
+                            </div>
+                            <div class="col-md-3 col-6 mb-2">
+                                <label class="form-label mb-1">Kelas</label>
+                                <select class="form-select" id="jurnal-kelas"></select>
+                            </div>
+                            <div class="col-md-6 col-12">
+                                <label class="form-label mb-1">Mata Pelajaran</label>
+                                <div class="input-group">
+                                    <select class="form-select" id="jurnal-mapel">
+                                        <option value="">-- Pilih Mapel --</option>
+                                    </select>
+                                    <button class="btn btn-outline-primary" type="button" onclick="showAddMapelModal()" title="Tambah Mapel Baru"><i class="bi bi-plus"></i></button>
+                                <button class="btn btn-outline-secondary" type="button" onclick="showManageMapelModal()" title="Edit/Hapus Mata Pelajaran"><i class="bi bi-gear"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row align-items-end">
+                            <div class="col-md-5 mb-3 mb-md-0">
+                                <label class="form-label mb-1">Isi Jurnal</label>
+                                <input type="text" class="form-control" id="jurnal-content" placeholder="Masukkan kegiatan...">
+                            </div>
+                            <div class="col-md-4 mb-3 mb-md-0">
+                                <label class="form-label mb-1">File Bukti (Opsional)</label>
+                                <input type="file" class="form-control" id="jurnal-file" accept="image/*,application/pdf">
+                            </div>
+                            <div class="col-md-3">
+                                <div class="form-check mb-1">
+                                    <input class="form-check-input" type="checkbox" id="jurnal-sync-cal" checked>
+                                    <label class="form-check-label small" for="jurnal-sync-cal">Sync ke Google Calendar</label>
+                                </div>
+                                <button class="btn btn-primary w-100 fw-bold" id="btn-save-jurnal" onclick="saveJurnal()"><i class="bi bi-save me-1"></i> Simpan</button>
+                                <button class="btn btn-outline-secondary w-100 fw-bold mt-1" id="btn-cancel-edit-jurnal" onclick="cancelEditJurnal()" style="display:none;"><i class="bi bi-x-circle me-1"></i> Batal Edit</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-custom">
+                    <div class="card-header-custom">
+                        <h5 class="card-title-custom mb-2 mb-md-0">Daftar Jurnal Harian</h5>
+                        <button class="btn btn-sm btn-danger" onclick="downloadJurnalPDF()"><i class="bi bi-file-pdf"></i> Download PDF</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-4 col-12">
+                                <label class="form-label fw-bold text-primary">Pilih Kelas Dahulu:</label>
+                                <select class="form-select border-primary" id="filter-jurnal-kelas" onchange="renderJurnal()"></select>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover text-sm" style="min-width: 600px;">
+                                <thead class="table-light">
+                                    <tr><th width="10%">Tanggal</th><th width="13%">Kelas</th><th width="17%">Mata Pelajaran</th><th width="30%">Isi Jurnal</th><th width="12%">Lampiran</th><th width="18%">Aksi</th></tr>
+                                </thead>
+                                <tbody id="jurnal-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-jadwal" class="view-section">
+                <div class="card-custom">
+                   <div class="card-header-custom">
+                       <h5 class="card-title-custom mb-2 mb-md-0">Jadwal Pelajaran</h5>
+                       <button class="btn btn-sm btn-primary" onclick="showAddScheduleModal()"><i class="bi bi-plus"></i> Tambah Jadwal</button>
+                   </div>
+                   <div class="card-body">
+                       <div class="row mb-4">
+                           <div class="col-md-4 col-12">
+                               <label class="form-label fw-bold text-primary">Pilih Kelas Dahulu:</label>
+                               <select class="form-select border-primary" id="filter-sched-class" onchange="renderSchedule()"></select>
+                           </div>
+                       </div>
+                       <div class="row" id="schedule-container">
+                           <div class="col-12 text-center text-muted py-5">
+                               <i class="bi bi-calendar-x" style="font-size: 3rem;"></i>
+                               <p class="mt-3">Silakan pilih kelas terlebih dahulu untuk melihat jadwal.</p>
+                           </div>
+                       </div>
+                   </div>
+               </div>
+           </div>
+
+            <div id="view-poin" class="view-section">
+                <div class="card-custom mb-4">
+                    <div class="card-header-custom"><h5 class="card-title-custom">Input Poin Siswa</h5></div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3 col-6 mb-3">
+                                <label class="form-label mb-1">Kelas</label>
+                                <select class="form-select" id="poin-kelas" onchange="populatePoinStudentSelect()"></select>
+                            </div>
+                            <div class="col-md-4 col-6 mb-3">
+                                <label class="form-label mb-1">Nama Siswa</label>
+                                <select class="form-select" id="poin-siswa"><option value="">-- Pilih Kelas Dahulu --</option></select>
+                            </div>
+                            <div class="col-md-2 col-6 mb-3">
+                                <label class="form-label mb-1">Tanggal</label>
+                                <input type="date" class="form-control" id="poin-tanggal">
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-3 col-6 mb-3">
+                                <label class="form-label mb-1 text-success fw-bold">Poin Reward</label>
+                                <input type="number" min="0" class="form-control" id="poin-reward" placeholder="0" value="0">
+                            </div>
+                            <div class="col-md-3 col-6 mb-3">
+                                <label class="form-label mb-1 text-danger fw-bold">Poin Pelanggaran</label>
+                                <input type="number" min="0" class="form-control" id="poin-pelanggaran" placeholder="0" value="0">
+                            </div>
+                            <div class="col-md-6 col-12 mb-3">
+                                <label class="form-label mb-1">Keterangan</label>
+                                <input type="text" class="form-control" id="poin-keterangan" placeholder="Cth: Membantu teman / Terlambat masuk kelas">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary w-100 fw-bold" id="btn-save-poin" onclick="savePoin()"><i class="bi bi-save me-1"></i> Simpan</button>
+                        <button class="btn btn-outline-secondary w-100 fw-bold mt-1" id="btn-cancel-edit-poin" onclick="cancelEditPoin()" style="display:none;"><i class="bi bi-x-circle me-1"></i> Batal Edit</button>
+                    </div>
+                </div>
+
+                <div class="card-custom mb-4">
+                    <div class="card-header-custom">
+                        <h5 class="card-title-custom mb-2 mb-md-0">Rekap Total Poin Siswa</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-4 col-12">
+                                <label class="form-label fw-bold text-primary">Pilih Kelas:</label>
+                                <select class="form-select border-primary" id="filter-poin-kelas" onchange="loadPoinData()"></select>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover text-sm" style="min-width: 500px;">
+                                <thead class="table-light">
+                                    <tr><th width="30%">Nama Siswa</th><th width="20%">Total Reward</th><th width="20%">Total Pelanggaran</th><th width="30%">Total Akumulasi Poin</th></tr>
+                                </thead>
+                                <tbody id="poin-rekap-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-custom">
+                    <div class="card-header-custom">
+                        <h5 class="card-title-custom mb-2 mb-md-0">Riwayat Poin Siswa</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover text-sm" style="min-width: 700px;">
+                                <thead class="table-light">
+                                    <tr><th width="10%">Tanggal</th><th width="18%">Nama Siswa</th><th width="12%">Kelas</th><th width="10%">Reward</th><th width="12%">Pelanggaran</th><th width="10%">Total</th><th width="18%">Keterangan</th><th width="10%">Aksi</th></tr>
+                                </thead>
+                                <tbody id="poin-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+           <!-- Watermark Footer Main Content -->
+           <div class="row mt-5 mb-2">
+               <div class="col-12 text-center">
+                   <p class="text-muted mb-0" style="font-size: 0.85rem;">
+                       &copy; 2026 Aplikasi MyAbsensi. Dikembangkan oleh <span class="fw-bold" style="color: var(--primary-blue);">Achmad Fitriansyah,S.Pd.</span>
+                   </p>
+                   <small class="text-muted" style="font-size: 0.75rem;">
+                       <i class="bi bi-tiktok"></i> Tiktok: None &nbsp;|&nbsp; <i class="bi bi-instagram"></i> Instagram: None
+                   </small>
+               </div>
+           </div>
+
+        </div> 
+    </div> 
+
+    <!-- Modal Form -->
+    <div class="modal fade" id="modalAddSchedule" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modal-schedule-title">Tambah Jadwal Pelajaran</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" onclick="closeModal('modalAddSchedule')"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Hari</label>
+                        <select class="form-select" id="sched-day">
+                            <option value="Senin">Senin</option><option value="Selasa">Selasa</option><option value="Rabu">Rabu</option>
+                            <option value="Kamis">Kamis</option><option value="Jumat">Jumat</option><option value="Sabtu">Sabtu</option>
+                        </select>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-6"><label class="form-label">Mulai</label><input type="time" class="form-control" id="sched-start"></div>
+                        <div class="col-6"><label class="form-label">Selesai</label><input type="time" class="form-control" id="sched-end"></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Mata Pelajaran</label>
+                        <div class="input-group">
+                            <select class="form-select" id="sched-subject">
+                                <option value="">-- Pilih Mapel --</option>
+                            </select>
+                            <button class="btn btn-outline-primary" type="button" onclick="showAddMapelModal()" title="Tambah Mapel Baru"><i class="bi bi-plus"></i></button>
+                        </div>
+                    </div>
+                    <div class="mb-3"><label class="form-label">Kelas</label><select class="form-select" id="sched-class"></select></div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="sched-sync-cal" checked>
+                        <label class="form-check-label small" for="sched-sync-cal">Otomatis buat event berulang di Google Calendar</label>
+                    </div>
+                </div>
+                <div class="modal-footer"><button type="button" class="btn btn-primary w-100" onclick="saveSchedule()">Simpan Jadwal</button></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Profil -->
+    <div class="modal fade" id="modalProfile" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Profil Guru</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" onclick="closeModal('modalProfile')"></button>
+                </div>
+                <div class="modal-body text-center">
+                    <img src="https://ui-avatars.com/api/?name=Guru&background=FF7F00&color=fff" id="modal-prof-img" class="rounded-circle mb-3 border border-3 border-warning" width="100" height="100" style="object-fit: cover;">
+                    <div class="mb-3 text-start">
+                        <label class="form-label fw-bold mb-1" style="font-size: 0.85rem;">Foto Profil</label>
+                        <input type="file" class="form-control form-control-sm" id="prof-photo-file" accept="image/*" onchange="previewProfilePhoto(event)">
+                    </div>
+                    <div class="mb-3 text-start">
+                        <label class="form-label fw-bold mb-1" style="font-size: 0.85rem;">Nama Lengkap</label>
+                        <input type="text" class="form-control" id="prof-name" placeholder="Nama Lengkap">
+                    </div>
+                    <div class="mb-3 text-start">
+                        <label class="form-label fw-bold mb-1" style="font-size: 0.85rem;">Asal Sekolah</label>
+                        <input type="text" class="form-control" id="prof-school" placeholder="Cth: SDN 1 Jakarta">
+                    </div>
+                </div>
+                <div class="modal-footer d-block">
+                    <button type="button" class="btn btn-primary w-100 mb-2" onclick="saveProfile()"><i class="bi bi-save me-1"></i> Simpan Perubahan</button>
+                    <button type="button" class="btn btn-outline-secondary w-100 btn-sm" onclick="forceRefreshFromServer()"><i class="bi bi-arrow-repeat me-1"></i> Segarkan Data dari Spreadsheet</button>
+                    <small class="text-muted d-block text-center mt-1">Gunakan ini jika data di aplikasi tidak sesuai dengan yang ada di Google Spreadsheet.</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Broadcast WA -->
+    <div class="modal fade" id="modalBroadcast" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-success text-white">
+                    <h5 class="modal-title"><i class="bi bi-whatsapp"></i> Broadcast Pesan WA</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-warning small">
+                        <i class="bi bi-info-circle"></i> Browser memblokir pembukaan puluhan tab WA sekaligus. Oleh karena itu, pengiriman dilakukan <b>satu per satu secara berurutan</b>.
+                    </div>
+                    <div id="broadcast-msg-wrapper" class="mb-3">
+                        <label class="form-label fw-bold">Template Pesan</label>
+                        <textarea class="form-control" id="broadcast-msg" rows="4" placeholder="Ketik pengumuman di sini...&#10;Gunakan [Nama] untuk menyebut nama siswa secara otomatis."></textarea>
+                        <small class="text-muted">Gunakan variabel <b>[Nama]</b> untuk kustomisasi.</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Antrean (<span id="broadcast-count">0</span> Siswa)</label>
+                        <ul class="list-group list-group-flush border rounded-3" id="broadcast-list" style="max-height: 180px; overflow-y: auto;">
+                        </ul>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-success w-100 fw-bold" id="btn-send-broadcast" onclick="sendNextBroadcast()">Mulai Kirim Pesan</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <?!= include("JavaScript"); ?>
+</body>
+</html>
